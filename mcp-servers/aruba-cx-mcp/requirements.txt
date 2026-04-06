@@ -1,0 +1,8 @@
+fastmcp
+requests
+pydantic
+python-dotenv
+pytest
+hypothesis
+pytest-mock
+responses

@@ -1,0 +1,15 @@
+{
+  "mcpServers": {
+    "aruba-cx-mcp": {
+      "command": "python3",
+      "args": ["-u", "mcp-servers/aruba-cx-mcp/aruba_cx_mcp_server.py"],
+      "env": {
+        "ARUBA_CX_TARGETS": "${ARUBA_CX_TARGETS}",
+        "ARUBA_CX_VERIFY_SSL": "${ARUBA_CX_VERIFY_SSL}",
+        "ARUBA_CX_TIMEOUT": "${ARUBA_CX_TIMEOUT}",
+        "NETCLAW_ITSM_ENABLED": "${NETCLAW_ITSM_ENABLED}",
+        "NETCLAW_LAB_MODE": "${NETCLAW_LAB_MODE}"
+      }
+    }
+  }
+}

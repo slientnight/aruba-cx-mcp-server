@@ -1,0 +1,21 @@
+{
+  "targets": [
+    {
+      "name": "core-switch-1",
+      "host": "10.0.1.1",
+      "username": "admin",
+      "password": "your-password",
+      "port": 443,
+      "api_version": "v10.13",
+      "verify_ssl": false
+    },
+    {
+      "name": "access-switch-2",
+      "host": "10.0.1.2",
+      "username": "admin",
+      "password": "your-password",
+      "verify_ssl": false
+    }
+  ],
+  "timeout": 30
+}
