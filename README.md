@@ -34,7 +34,7 @@ Switches can be configured two ways:
 
 ### Option 1: Config file (recommended)
 
-Create `aruba-cx-config.json` (see `aruba-cx-config.example.json`):
+Create `aruba-cx-config.json` in the server directory (see `mcp-servers/aruba-cx-mcp/aruba-cx-config.example.json`):
 
 ```json
 {
