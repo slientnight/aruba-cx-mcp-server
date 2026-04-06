@@ -70,9 +70,9 @@ class _EnvContext:
 @settings(max_examples=100)
 @given(cr=_valid_chg)
 def test_itsm_enabled_accepts_valid_chg_format(cr: str):
-    """When NETCLAW_ITSM_ENABLED=true, any string matching ^CHG\\d+$ should
+    """When ITSM_ENABLED=true, any string matching ^CHG\\d+$ should
     be accepted without raising an error."""
-    with _EnvContext(NETCLAW_ITSM_ENABLED="true", NETCLAW_LAB_MODE="true"):
+    with _EnvContext(ITSM_ENABLED="true", ITSM_LAB_MODE="true"):
         # Should not raise
         validate_change_request(cr)
 
@@ -80,11 +80,11 @@ def test_itsm_enabled_accepts_valid_chg_format(cr: str):
 @settings(max_examples=100)
 @given(cr=_arbitrary_text)
 def test_itsm_enabled_rejects_invalid_chg_format(cr: str):
-    """When NETCLAW_ITSM_ENABLED=true, any string NOT matching ^CHG\\d+$
+    """When ITSM_ENABLED=true, any string NOT matching ^CHG\\d+$
     should be rejected with a ValueError containing a descriptive message."""
     assume(not _is_valid_chg(cr))
 
-    with _EnvContext(NETCLAW_ITSM_ENABLED="true", NETCLAW_LAB_MODE="true"):
+    with _EnvContext(ITSM_ENABLED="true", ITSM_LAB_MODE="true"):
         raised = False
         try:
             validate_change_request(cr)
@@ -103,16 +103,16 @@ def test_itsm_enabled_rejects_invalid_chg_format(cr: str):
 # **Validates: Requirements 4.3**
 # ---------------------------------------------------------------------------
 
-# Strategy for the disabled states of NETCLAW_ITSM_ENABLED
+# Strategy for the disabled states of ITSM_ENABLED
 _disabled_values = st.sampled_from(["false", "False", "FALSE", "no", "0", "", "anything"])
 
 
 @settings(max_examples=100)
 @given(cr=_arbitrary_text, env_val=_disabled_values)
 def test_itsm_disabled_bypasses_all_validation(cr: str, env_val: str):
-    """When NETCLAW_ITSM_ENABLED is false (various representations),
+    """When ITSM_ENABLED is false (various representations),
     the ITSM gate should not reject any request regardless of input."""
-    with _EnvContext(NETCLAW_ITSM_ENABLED=env_val):
+    with _EnvContext(ITSM_ENABLED=env_val):
         # Should never raise, even for empty/invalid strings
         validate_change_request(cr)
 
@@ -120,9 +120,9 @@ def test_itsm_disabled_bypasses_all_validation(cr: str, env_val: str):
 @settings(max_examples=100)
 @given(cr=_arbitrary_text)
 def test_itsm_unset_bypasses_all_validation(cr: str):
-    """When NETCLAW_ITSM_ENABLED is unset, the ITSM gate should not reject
+    """When ITSM_ENABLED is unset, the ITSM gate should not reject
     any request — write operations proceed without CR validation."""
-    with _EnvContext(NETCLAW_ITSM_ENABLED=None):
+    with _EnvContext(ITSM_ENABLED=None):
         # Should never raise
         validate_change_request(cr)
 
@@ -137,10 +137,10 @@ def test_itsm_unset_bypasses_all_validation(cr: str):
 @settings(max_examples=100)
 @given(cr=_valid_chg)
 def test_lab_mode_accepts_valid_chg_without_api_call(cr: str):
-    """When NETCLAW_ITSM_ENABLED=true and NETCLAW_LAB_MODE=true, valid CHG
-    strings should be accepted. No ServiceNow API call should be made
+    """When ITSM_ENABLED=true and ITSM_LAB_MODE=true, valid CHG
+    strings should be accepted. No API call should be made
     (format-only validation)."""
-    with _EnvContext(NETCLAW_ITSM_ENABLED="true", NETCLAW_LAB_MODE="true"):
+    with _EnvContext(ITSM_ENABLED="true", ITSM_LAB_MODE="true"):
         # Should not raise — format is valid, no API call in lab mode
         validate_change_request(cr)
 
@@ -148,12 +148,12 @@ def test_lab_mode_accepts_valid_chg_without_api_call(cr: str):
 @settings(max_examples=100)
 @given(cr=_arbitrary_text)
 def test_lab_mode_rejects_invalid_chg(cr: str):
-    """When NETCLAW_ITSM_ENABLED=true and NETCLAW_LAB_MODE=true, strings
+    """When ITSM_ENABLED=true and ITSM_LAB_MODE=true, strings
     NOT matching ^CHG\\d+$ should still be rejected (format validation
     still applies)."""
     assume(not _is_valid_chg(cr))
 
-    with _EnvContext(NETCLAW_ITSM_ENABLED="true", NETCLAW_LAB_MODE="true"):
+    with _EnvContext(ITSM_ENABLED="true", ITSM_LAB_MODE="true"):
         raised = False
         try:
             validate_change_request(cr)

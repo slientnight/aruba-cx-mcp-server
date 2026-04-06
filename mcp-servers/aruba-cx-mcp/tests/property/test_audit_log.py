@@ -1,10 +1,10 @@
-# Feature: aruba-cx-python-port, Property 7: GAIT log entry completeness
-"""Property tests for GAIT audit logging.
+# Feature: aruba-cx-python-port, Property 7: Audit log entry completeness
+"""Property tests for Audit audit logging.
 
 Tests cover:
-- Property 7: GAIT log entry completeness — every log entry has required fields,
+- Property 7: Audit log entry completeness — every log entry has required fields,
   write ops include additional fields.
-- Property 32: GAIT graceful degradation — GAIT failures never break tool invocations.
+- Property 32: Audit graceful degradation — Audit failures never break tool invocations.
 
 **Validates: Requirements 5.1, 5.2, 5.4**
 """
@@ -41,7 +41,7 @@ def _import_server_module():
 
 
 _server = _import_server_module()
-_gait_log = _server._gait_log
+_audit_log = _server._audit_log
 
 
 # ---------------------------------------------------------------------------
@@ -78,24 +78,24 @@ _verify_dict = st.fixed_dictionaries({
 
 
 # ---------------------------------------------------------------------------
-# Property 7: GAIT log entry completeness
-# Feature: aruba-cx-python-port, Property 7: GAIT log entry completeness
+# Property 7: Audit log entry completeness
+# Feature: aruba-cx-python-port, Property 7: Audit log entry completeness
 # **Validates: Requirements 5.1, 5.2**
 # ---------------------------------------------------------------------------
 
 
 @settings(max_examples=100)
 @given(operation=_operation, target=_target, status=_status)
-def test_gait_log_entry_has_required_fields(operation: str, target: str, status: str):
-    """For any tool invocation, the GAIT log entry emitted to stderr should be
+def test_audit_log_entry_has_required_fields(operation: str, target: str, status: str):
+    """For any tool invocation, the Audit log entry emitted to stderr should be
     valid JSON containing operation, timestamp (ISO 8601 UTC), target, and status."""
     captured = io.StringIO()
 
     with patch("sys.stderr", captured):
-        _gait_log(operation, target, status)
+        _audit_log(operation, target, status)
 
     output = captured.getvalue().strip()
-    assert len(output) > 0, "GAIT log should emit output to stderr"
+    assert len(output) > 0, "Audit log should emit output to stderr"
 
     entry = json.loads(output)
 
@@ -128,7 +128,7 @@ def test_gait_log_entry_has_required_fields(operation: str, target: str, status:
     baseline=_baseline_dict,
     verify=_verify_dict,
 )
-def test_gait_log_write_op_includes_extra_fields(
+def test_audit_log_write_op_includes_extra_fields(
     operation: str,
     target: str,
     status: str,
@@ -136,12 +136,12 @@ def test_gait_log_write_op_includes_extra_fields(
     baseline: dict,
     verify: dict,
 ):
-    """For write operations, the GAIT log entry should additionally contain
+    """For write operations, the Audit log entry should additionally contain
     change_request_number, baseline, and verify fields."""
     captured = io.StringIO()
 
     with patch("sys.stderr", captured):
-        _gait_log(
+        _audit_log(
             operation,
             target,
             status,
@@ -169,46 +169,46 @@ def test_gait_log_write_op_includes_extra_fields(
 
 
 # ---------------------------------------------------------------------------
-# Property 32: GAIT graceful degradation
-# Feature: aruba-cx-python-port, Property 32: GAIT graceful degradation
+# Property 32: Audit graceful degradation
+# Feature: aruba-cx-python-port, Property 32: Audit graceful degradation
 # **Validates: Requirements 5.4**
 # ---------------------------------------------------------------------------
 
 
 @settings(max_examples=100)
 @given(operation=_operation, target=_target, status=_status)
-def test_gait_graceful_degradation_on_json_dumps_failure(
+def test_Audit_graceful_degradation_on_json_dumps_failure(
     operation: str, target: str, status: str
 ):
-    """If json.dumps raises an exception inside _gait_log, the function should
+    """If json.dumps raises an exception inside _audit_log, the function should
     silently degrade — no exception should propagate."""
     original_dumps = _server.json.dumps
     try:
         _server.json.dumps = MagicMock(side_effect=TypeError("boom"))
         # Should NOT raise
-        _gait_log(operation, target, status)
+        _audit_log(operation, target, status)
     finally:
         _server.json.dumps = original_dumps
 
 
 @settings(max_examples=100)
 @given(operation=_operation, target=_target, status=_status)
-def test_gait_graceful_degradation_on_print_failure(
+def test_Audit_graceful_degradation_on_print_failure(
     operation: str, target: str, status: str
 ):
-    """If print to stderr raises an exception inside _gait_log, the function
+    """If print to stderr raises an exception inside _audit_log, the function
     should silently degrade — no exception should propagate."""
     with patch("builtins.print", side_effect=IOError("stderr broken")):
         # Should NOT raise
-        _gait_log(operation, target, status)
+        _audit_log(operation, target, status)
 
 
 @settings(max_examples=100)
 @given(operation=_operation, target=_target, status=_status)
-def test_gait_graceful_degradation_on_datetime_failure(
+def test_Audit_graceful_degradation_on_datetime_failure(
     operation: str, target: str, status: str
 ):
-    """If datetime.utcnow() raises an exception inside _gait_log, the function
+    """If datetime.utcnow() raises an exception inside _audit_log, the function
     should silently degrade — no exception should propagate."""
     original_datetime = _server.datetime
 
@@ -220,6 +220,6 @@ def test_gait_graceful_degradation_on_datetime_failure(
     try:
         _server.datetime = BrokenDatetime
         # Should NOT raise
-        _gait_log(operation, target, status)
+        _audit_log(operation, target, status)
     finally:
         _server.datetime = original_datetime

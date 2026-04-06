@@ -2,7 +2,7 @@
 
 Defines target configuration, error responses, and domain response models
 for all tool categories (system, interfaces, VLANs, routing, LLDP, MAC table,
-optics/DOM, ISSU, and GAIT audit logging).
+optics/DOM, ISSU, and audit logging).
 """
 
 from enum import Enum
@@ -221,11 +221,11 @@ class IssuStatus(BaseModel):
     error_message: Optional[str] = None
 
 
-# --- GAIT Audit Log Models ---
+# --- Audit Log Models ---
 
 
-class GaitLogEntry(BaseModel):
-    """Structured GAIT audit log entry."""
+class AuditLogEntry(BaseModel):
+    """Structured audit log entry."""
 
     operation: str
     timestamp: str  # UTC ISO 8601

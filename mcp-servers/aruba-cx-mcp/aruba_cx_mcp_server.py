@@ -1,11 +1,7 @@
 """Aruba CX MCP Server — FastMCP server exposing Aruba CX switch management tools.
 
 Provides 16 MCP tools (11 read + 5 write) over stdio transport for managing
-Aruba CX switches via the AOS-CX REST API. Supports standalone and NetClaw
-deployment modes from a single codebase.
-
-Standalone mode: ITSM gate disabled, JSON serialization, basic stderr logging.
-NetClaw mode:    ITSM gate active, GAIT audit logging, toon serialization.
+Aruba CX switches via the AOS-CX REST API.
 """
 
 import json
@@ -14,9 +10,7 @@ import sys
 from datetime import datetime, timezone
 from typing import Any
 
-# Add current directory and ../../src to sys.path for netclaw_tokens access
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
-sys.path.insert(0, os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "..", "src"))
 
 from fastmcp import FastMCP
 
@@ -29,12 +23,7 @@ from models import ArubaCxError, ErrorCode
 # ---------------------------------------------------------------------------
 mcp = FastMCP("aruba-cx-mcp")
 
-# ---------------------------------------------------------------------------
-# Deployment mode detection
-# ---------------------------------------------------------------------------
-_itsm_enabled = os.environ.get("NETCLAW_ITSM_ENABLED", "false").lower() == "true"
-_mode = "NetClaw" if _itsm_enabled else "Standalone"
-print(f"Aruba CX MCP server starting in {_mode} mode", file=sys.stderr)
+print("Aruba CX MCP server starting", file=sys.stderr)
 
 # ---------------------------------------------------------------------------
 # Module-level client instance
@@ -47,18 +36,13 @@ client = ArubaCxClient()
 # ---------------------------------------------------------------------------
 
 
-def _toon_dumps(data: Any) -> str:
-    """Serialize data via toon_serializer, fallback to json.dumps(indent=2)."""
-    try:
-        from netclaw_tokens.toon_serializer import serialize_response
-
-        return serialize_response(data)
-    except (ImportError, Exception):
-        return json.dumps(data, indent=2, default=str)
+def _json_dumps(data: Any) -> str:
+    """Serialize data to JSON with indent=2."""
+    return json.dumps(data, indent=2, default=str)
 
 
-def _gait_log(operation: str, target: str, status: str, **kwargs) -> None:
-    """Emit structured JSON log to stderr. Silently degrades on failure."""
+def _audit_log(operation: str, target: str, status: str, **kwargs) -> None:
+    """Emit structured JSON audit log to stderr. Silently degrades on failure."""
     try:
         entry = {
             "operation": operation,
@@ -206,14 +190,14 @@ def get_system(target: str) -> str:
                     }
                     break
 
-        _gait_log("get_system", target, "success")
-        return _toon_dumps(result)
+        _audit_log("get_system", target, "success")
+        return _json_dumps(result)
     except ArubaCxException as exc:
-        _gait_log("get_system", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_system", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_system", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_system", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -252,14 +236,14 @@ def get_interfaces(target: str, interface: str = "") -> str:
                         "duplex": iface_data.get("duplex"),
                         "mtu": iface_data.get("mtu"),
                     })
-        _gait_log("get_interfaces", target, "success")
-        return _toon_dumps(result)
+        _audit_log("get_interfaces", target, "success")
+        return _json_dumps(result)
     except ArubaCxException as exc:
-        _gait_log("get_interfaces", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_interfaces", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_interfaces", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_interfaces", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 @mcp.tool()
@@ -281,17 +265,17 @@ def configure_interface(target: str, interface: str, admin_state: str = "", desc
         client.put(target, f"/system/interfaces/{encoded}", config)
         # GET verify
         verify = client.get(target, f"/system/interfaces/{encoded}")
-        _gait_log("configure_interface", target, "success", change_request_number=change_request_number, baseline=baseline, verify=verify)
-        return _toon_dumps({"status": "success", "interface": interface, "baseline": baseline, "verify": verify})
+        _audit_log("configure_interface", target, "success", change_request_number=change_request_number, baseline=baseline, verify=verify)
+        return _json_dumps({"status": "success", "interface": interface, "baseline": baseline, "verify": verify})
     except ValueError as exc:
-        _gait_log("configure_interface", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("configure_interface", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
     except ArubaCxException as exc:
-        _gait_log("configure_interface", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("configure_interface", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("configure_interface", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("configure_interface", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -312,14 +296,14 @@ def get_vlans(target: str) -> str:
                     "name": vlan_data.get("name", ""),
                     "status": vlan_data.get("oper_state", vlan_data.get("status", "unknown")),
                 })
-        _gait_log("get_vlans", target, "success")
-        return _toon_dumps(vlans)
+        _audit_log("get_vlans", target, "success")
+        return _json_dumps(vlans)
     except ArubaCxException as exc:
-        _gait_log("get_vlans", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_vlans", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_vlans", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_vlans", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 @mcp.tool()
@@ -329,25 +313,25 @@ def manage_vlan(target: str, action: str, vlan_id: int, name: str = "", change_r
         validate_change_request(change_request_number)
         if action == "create":
             if not name:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="name is required for create action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="name is required for create action", target=target).model_dump())
             client.post(target, "/system/vlans", {"id": vlan_id, "name": name})
-            _gait_log("manage_vlan", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "create", "vlan_id": vlan_id, "name": name})
+            _audit_log("manage_vlan", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "create", "vlan_id": vlan_id, "name": name})
         elif action == "delete":
             client.delete(target, f"/system/vlans/{vlan_id}")
-            _gait_log("manage_vlan", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "delete", "vlan_id": vlan_id})
+            _audit_log("manage_vlan", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "delete", "vlan_id": vlan_id})
         else:
-            return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'create' or 'delete'", target=target).model_dump())
+            return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'create' or 'delete'", target=target).model_dump())
     except ValueError as exc:
-        _gait_log("manage_vlan", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_vlan", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
     except ArubaCxException as exc:
-        _gait_log("manage_vlan", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("manage_vlan", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("manage_vlan", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_vlan", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -361,14 +345,14 @@ def get_config(target: str, config_type: str = "running") -> str:
     try:
         path = "/fullconfigs/startup-config" if config_type == "startup" else "/fullconfigs/running-config"
         data = client.get(target, path)
-        _gait_log("get_config", target, "success")
-        return _toon_dumps(data)
+        _audit_log("get_config", target, "success")
+        return _json_dumps(data)
     except ArubaCxException as exc:
-        _gait_log("get_config", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_config", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_config", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_config", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 @mcp.tool()
@@ -378,23 +362,23 @@ def save_config(target: str, action: str = "write_memory", checkpoint_name: str 
         validate_change_request(change_request_number)
         if action == "checkpoint":
             if not checkpoint_name:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="checkpoint_name is required for checkpoint action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="checkpoint_name is required for checkpoint action", target=target).model_dump())
             client.post(target, "/fullconfigs/checkpoints", {"name": checkpoint_name})
-            _gait_log("save_config", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "checkpoint", "checkpoint_name": checkpoint_name})
+            _audit_log("save_config", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "checkpoint", "checkpoint_name": checkpoint_name})
         else:
             client.put(target, "/fullconfigs/startup-config", {"from": "/fullconfigs/running-config"})
-            _gait_log("save_config", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "write_memory", "message": "Running config saved to startup"})
+            _audit_log("save_config", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "write_memory", "message": "Running config saved to startup"})
     except ValueError as exc:
-        _gait_log("save_config", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("save_config", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
     except ArubaCxException as exc:
-        _gait_log("save_config", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("save_config", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("save_config", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("save_config", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -417,8 +401,8 @@ def get_routing(target: str, table: str = "routes", vrf: str = "default") -> str
                         "interface": entry_data.get("port", entry_data.get("interface", "")),
                         "state": entry_data.get("state"),
                     })
-            _gait_log("get_routing", target, "success")
-            return _toon_dumps(entries)
+            _audit_log("get_routing", target, "success")
+            return _json_dumps(entries)
         else:
             data = client.get(target, f"/system/vrfs/{vrf}/routes?depth=2")
             routes = []
@@ -430,14 +414,14 @@ def get_routing(target: str, table: str = "routes", vrf: str = "default") -> str
                         "protocol": route_data.get("route_type", route_data.get("protocol", "")),
                         "metric": route_data.get("distance", route_data.get("metric", 0)),
                     })
-            _gait_log("get_routing", target, "success")
-            return _toon_dumps(routes)
+            _audit_log("get_routing", target, "success")
+            return _json_dumps(routes)
     except ArubaCxException as exc:
-        _gait_log("get_routing", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_routing", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_routing", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_routing", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -468,14 +452,14 @@ def get_lldp_neighbors(target: str, interface: str = "") -> str:
         # Filter by interface if specified
         if interface:
             neighbors = [n for n in neighbors if n["local_interface"] == interface]
-        _gait_log("get_lldp_neighbors", target, "success")
-        return _toon_dumps(neighbors)
+        _audit_log("get_lldp_neighbors", target, "success")
+        return _json_dumps(neighbors)
     except ArubaCxException as exc:
-        _gait_log("get_lldp_neighbors", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_lldp_neighbors", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_lldp_neighbors", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_lldp_neighbors", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -546,14 +530,14 @@ def get_mac_address_table(target: str, vlan_id: int = 0, mac_address: str = "") 
         if mac_address:
             mac_lower = mac_address.lower()
             entries = [e for e in entries if e["mac_address"].lower() == mac_lower]
-        _gait_log("get_mac_address_table", target, "success")
-        return _toon_dumps(entries)
+        _audit_log("get_mac_address_table", target, "success")
+        return _json_dumps(entries)
     except ArubaCxException as exc:
-        _gait_log("get_mac_address_table", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_mac_address_table", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_mac_address_table", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_mac_address_table", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -567,7 +551,7 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
     try:
         if detail == "dom":
             if not interface:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="interface is required for dom detail", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="interface is required for dom detail", target=target).model_dump())
             encoded = interface.replace("/", "%2F")
             data = client.get(target, f"/system/interfaces/{encoded}?depth=2&attributes=pm_monitor")
             pm = data.get("pm_monitor", data)
@@ -602,8 +586,8 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
                 "bias_current_ma": pm.get("bias_current_ma", pm.get("bias_current")),
                 "lanes": lanes,
             }
-            _gait_log("get_optics", target, "success")
-            return _toon_dumps(result)
+            _audit_log("get_optics", target, "success")
+            return _json_dumps(result)
 
         elif detail == "health":
             data = client.get(target, "/system/interfaces?depth=2&attributes=pm_monitor")
@@ -647,8 +631,8 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
                             except (ValueError, TypeError):
                                 pass
                 results.append({"interface": iface_name, "status": "unhealthy" if violations else "healthy", "violations": violations})
-            _gait_log("get_optics", target, "success")
-            return _toon_dumps(results)
+            _audit_log("get_optics", target, "success")
+            return _json_dumps(results)
 
         else:  # info
             data = client.get(target, "/system/interfaces?depth=2&attributes=pm_info")
@@ -669,14 +653,14 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
                 })
             if interface:
                 transceivers = [t for t in transceivers if t["interface"] == interface]
-            _gait_log("get_optics", target, "success")
-            return _toon_dumps(transceivers)
+            _audit_log("get_optics", target, "success")
+            return _json_dumps(transceivers)
     except ArubaCxException as exc:
-        _gait_log("get_optics", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_optics", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_optics", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_optics", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -724,14 +708,14 @@ def get_issu_info(target: str) -> str:
             "error_message": data.get("error_message", data.get("error")),
             "details": data.get("details", data.get("message", "")),
         }
-        _gait_log("get_issu_info", target, "success")
-        return _toon_dumps(result)
+        _audit_log("get_issu_info", target, "success")
+        return _json_dumps(result)
     except ArubaCxException as exc:
-        _gait_log("get_issu_info", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_issu_info", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_issu_info", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_issu_info", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 @mcp.tool()
@@ -741,31 +725,31 @@ def manage_issu(target: str, action: str, firmware_image: str = "", timeout_seco
         validate_change_request(change_request_number)
         if action == "initiate":
             if not firmware_image:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="firmware_image is required for initiate action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="firmware_image is required for initiate action", target=target).model_dump())
             client.post(target, "/system/issu/start", {"firmware_image": firmware_image})
-            _gait_log("manage_issu", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "initiate", "message": f"ISSU initiated with image {firmware_image}"})
+            _audit_log("manage_issu", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "initiate", "message": f"ISSU initiated with image {firmware_image}"})
         elif action == "set_rollback_timer":
             if not timeout_seconds:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="timeout_seconds is required for set_rollback_timer action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="timeout_seconds is required for set_rollback_timer action", target=target).model_dump())
             client.put(target, "/system/issu/rollback_timer", {"timeout_seconds": timeout_seconds})
-            _gait_log("manage_issu", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "set_rollback_timer", "timeout_seconds": timeout_seconds})
+            _audit_log("manage_issu", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "set_rollback_timer", "timeout_seconds": timeout_seconds})
         elif action == "confirm":
             client.post(target, "/system/issu/confirm", {})
-            _gait_log("manage_issu", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "confirm", "message": "ISSU confirmed, rollback timer cancelled"})
+            _audit_log("manage_issu", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "confirm", "message": "ISSU confirmed, rollback timer cancelled"})
         else:
-            return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'initiate', 'set_rollback_timer', or 'confirm'", target=target).model_dump())
+            return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'initiate', 'set_rollback_timer', or 'confirm'", target=target).model_dump())
     except ValueError as exc:
-        _gait_log("manage_issu", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_issu", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
     except ArubaCxException as exc:
-        _gait_log("manage_issu", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("manage_issu", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("manage_issu", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_issu", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -800,14 +784,14 @@ def get_firmware(target: str) -> str:
             }
         except Exception:
             info["transfer_status"] = {"status": "idle", "progress": 0, "message": ""}
-        _gait_log("get_firmware", target, "success")
-        return _toon_dumps(info)
+        _audit_log("get_firmware", target, "success")
+        return _json_dumps(info)
     except ArubaCxException as exc:
-        _gait_log("get_firmware", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("get_firmware", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("get_firmware", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("get_firmware", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 @mcp.tool()
@@ -817,27 +801,27 @@ def manage_firmware(target: str, action: str, file_path: str = "", url: str = ""
         validate_change_request(change_request_number)
         if action == "upload":
             if not file_path:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="file_path is required for upload action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="file_path is required for upload action", target=target).model_dump())
             client.post(target, "/system/firmware/upload", {"file_path": file_path})
-            _gait_log("manage_firmware", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "upload", "message": f"Firmware upload initiated from {file_path}"})
+            _audit_log("manage_firmware", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "upload", "message": f"Firmware upload initiated from {file_path}"})
         elif action == "download":
             if not url:
-                return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="url is required for download action", target=target).model_dump())
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="url is required for download action", target=target).model_dump())
             client.post(target, "/system/firmware/download", {"url": url})
-            _gait_log("manage_firmware", target, "success", change_request_number=change_request_number)
-            return _toon_dumps({"status": "success", "action": "download", "message": f"Firmware download initiated from {url}"})
+            _audit_log("manage_firmware", target, "success", change_request_number=change_request_number)
+            return _json_dumps({"status": "success", "action": "download", "message": f"Firmware download initiated from {url}"})
         else:
-            return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'upload' or 'download'", target=target).model_dump())
+            return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=f"Unknown action '{action}'. Use 'upload' or 'download'", target=target).model_dump())
     except ValueError as exc:
-        _gait_log("manage_firmware", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_firmware", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
     except ArubaCxException as exc:
-        _gait_log("manage_firmware", target, "error")
-        return _toon_dumps(exc.error.model_dump())
+        _audit_log("manage_firmware", target, "error")
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        _gait_log("manage_firmware", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+        _audit_log("manage_firmware", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 # ---------------------------------------------------------------------------
@@ -878,23 +862,23 @@ def get_vsf_topology(target: str) -> str:
             "vsf_enabled": True,
             "members": members,
         }
-        _gait_log("get_vsf_topology", target, "success")
-        return _toon_dumps(result)
+        _audit_log("get_vsf_topology", target, "success")
+        return _json_dumps(result)
     except ArubaCxException as exc:
         # Check if the error indicates VSF not supported
         err = exc.error
         if err.http_status == 404 or "not supported" in (err.message or "").lower() or "not found" in (err.message or "").lower():
-            _gait_log("get_vsf_topology", target, "success")
-            return _toon_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
-        _gait_log("get_vsf_topology", target, "error")
-        return _toon_dumps(err.model_dump())
+            _audit_log("get_vsf_topology", target, "success")
+            return _json_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
+        _audit_log("get_vsf_topology", target, "error")
+        return _json_dumps(err.model_dump())
     except Exception as exc:
         error_msg = str(exc).lower()
         if "404" in error_msg or "not supported" in error_msg or "not found" in error_msg:
-            _gait_log("get_vsf_topology", target, "success")
-            return _toon_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
-        _gait_log("get_vsf_topology", target, "error")
-        return _toon_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+            _audit_log("get_vsf_topology", target, "success")
+            return _json_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
+        _audit_log("get_vsf_topology", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
 if __name__ == "__main__":

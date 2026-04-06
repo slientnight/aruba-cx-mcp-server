@@ -19,7 +19,6 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs
 - **Firmware** — upload from local file, download from HTTP, boot bank info
 - **VSF** — topology and member information
 - **Multi-switch** — manage multiple switches from a single server instance
-- **Dual deployment** — standalone mode or NetClaw-integrated with ITSM gate and GAIT audit logging
 
 ## Installation
 
@@ -78,8 +77,8 @@ Each target requires `name`, `host`, `username`, `password`. Optional fields: `p
 | `ARUBA_CX_TARGETS` | `[]` | JSON array of target switch definitions |
 | `ARUBA_CX_CONFIG` | | Path to JSON config file |
 | `ARUBA_CX_TIMEOUT` | `30` | Request timeout in seconds |
-| `NETCLAW_ITSM_ENABLED` | `false` | Enable ITSM gate for write operations |
-| `NETCLAW_LAB_MODE` | `false` | Skip ServiceNow API check (format-only CR validation) |
+| `ITSM_ENABLED` | `false` | Enable ITSM gate for write operations |
+| `ITSM_LAB_MODE` | `false` | Format-only CR validation (skip external checks) |
 
 ## Usage with MCP clients
 
@@ -147,7 +146,7 @@ Add to your Claude Desktop config:
 | `manage_issu` | Initiate, set rollback timer, or confirm (pass `action`) |
 | `manage_firmware` | Upload or download firmware (pass `action`) |
 
-Write tools accept an optional `change_request_number` parameter. When `NETCLAW_ITSM_ENABLED=true`, a valid ServiceNow CR (format: `CHG` + digits) is required.
+Write tools accept an optional `change_request_number` parameter. When `ITSM_ENABLED=true`, a valid CR (format: `CHG` + digits) is required.
 
 ## Testing
 

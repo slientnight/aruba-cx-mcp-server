@@ -1,8 +1,7 @@
-"""ITSM gate for validating ServiceNow Change Request numbers.
+"""ITSM gate for validating Change Request numbers.
 
-Validates change_request_number format and optionally checks ServiceNow API
-before allowing write operations. Completely disabled when NETCLAW_ITSM_ENABLED
-is false or unset.
+Validates change_request_number format before allowing write operations.
+Disabled by default. Enable with ITSM_ENABLED=true.
 """
 
 import logging
@@ -16,11 +15,10 @@ _CHG_PATTERN = re.compile(r"^CHG\d+$")
 
 
 def validate_change_request(change_request_number: str) -> None:
-    """Validate a ServiceNow Change Request number.
+    """Validate a Change Request number.
 
-    When NETCLAW_ITSM_ENABLED is false or unset, this is a no-op.
-    When enabled, validates format (CHG followed by digits) and optionally
-    checks ServiceNow API (skipped in lab mode).
+    When ITSM_ENABLED is false or unset, this is a no-op.
+    When enabled, validates format (CHG followed by digits).
 
     Args:
         change_request_number: The Change Request number to validate.
@@ -29,7 +27,7 @@ def validate_change_request(change_request_number: str) -> None:
         ValueError: If ITSM is enabled and the change_request_number is
             empty, missing, or has an invalid format.
     """
-    itsm_enabled = os.environ.get("NETCLAW_ITSM_ENABLED", "false").lower() == "true"
+    itsm_enabled = os.environ.get("ITSM_ENABLED", "false").lower() == "true"
 
     if not itsm_enabled:
         return
@@ -48,18 +46,14 @@ def validate_change_request(change_request_number: str) -> None:
             "Expected format: CHG followed by one or more digits (e.g., CHG0012345)."
         )
 
-    # Check if lab mode — skip ServiceNow API call
-    lab_mode = os.environ.get("NETCLAW_LAB_MODE", "false").lower() == "true"
+    # Lab mode — skip external API call
+    lab_mode = os.environ.get("ITSM_LAB_MODE", "false").lower() == "true"
 
     if lab_mode:
         logger.info(
-            "Lab mode active — skipping ServiceNow API check for %s",
+            "Lab mode active — skipping API check for %s",
             change_request_number,
         )
         return
 
-    # Production mode — would check ServiceNow API
-    logger.info(
-        "Would check ServiceNow API for change request %s (no credentials configured)",
-        change_request_number,
-    )
+    logger.info("CR %s format validated", change_request_number)
