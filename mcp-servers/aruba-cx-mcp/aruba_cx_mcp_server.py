@@ -206,8 +206,8 @@ def get_system(target: str) -> str:
 
 
 @mcp.tool()
-def get_interfaces(target: str, interface: str = "") -> str:
-    """Get interfaces from an Aruba CX switch. Without interface param returns all interfaces summary. With interface param returns detailed info including statistics for that interface."""
+def get_interfaces(target: str, interface: str = "", detail: str = "config") -> str:
+    """Get interfaces from an Aruba CX switch. Without interface param returns all interfaces summary. With interface param returns detailed info. detail: 'config' (default) for config only, 'stats' to include statistics, 'full' for both."""
     def _extract_vlan(idata: dict):
         """Extract VLAN ID from vlan_tag or applied_vlan_tag."""
         vt = idata.get("vlan_tag")
@@ -245,10 +245,11 @@ def get_interfaces(target: str, interface: str = "") -> str:
                 "duplex": data.get("duplex"),
                 "vlan_id": vlan_id,
                 "vlan_mode": data.get("vlan_mode"),
-                "statistics": data.get("statistics"),
             }
             if trunk_vlans:
                 result["trunk_vlans"] = trunk_vlans
+            if detail in ("stats", "full"):
+                result["statistics"] = data.get("statistics")
         else:
             data = client.get(target, "/system/interfaces?depth=2")
             result = []
