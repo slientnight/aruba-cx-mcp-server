@@ -260,6 +260,12 @@ class ArubaCxClient:
         """PUT request with session-per-request lifecycle."""
         return self._request(target_name, "PUT", path, payload)
 
+    def patch(
+        self, target_name: str, path: str, payload: Optional[dict] = None
+    ) -> dict:
+        """PATCH request with session-per-request lifecycle."""
+        return self._request(target_name, "PATCH", path, payload)
+
     def delete(self, target_name: str, path: str) -> dict:
         """DELETE request with session-per-request lifecycle."""
         return self._request(target_name, "DELETE", path)

@@ -281,15 +281,21 @@ def configure_interface(target: str, interface: str, admin_state: str = "", desc
         encoded = interface.replace("/", "%2F")
         # GET baseline
         baseline = client.get(target, f"/system/interfaces/{encoded}")
-        # Build config payload
+        # Build config payload — only include fields being changed
         config = {}
         if admin_state: config["admin_state"] = admin_state
         if description: config["description"] = description
         if speed: config["speed"] = speed
         if duplex: config["duplex"] = duplex
-        if vlan: config["vlan_tag"] = vlan
-        # PUT config
-        client.put(target, f"/system/interfaces/{encoded}", config)
+        if vlan:
+            # AOS-CX REST API expects vlan_tag as a URI reference to the VLAN
+            # Also set vlan_mode to access for static VLAN assignment
+            target_obj = client._targets.get(target)
+            api_ver = target_obj.api_version if target_obj else "v10.13"
+            config["vlan_tag"] = f"/rest/{api_ver}/system/vlans/{vlan}"
+            config["vlan_mode"] = "access"
+        # PATCH config (merge with existing, don't replace)
+        client.patch(target, f"/system/interfaces/{encoded}", config)
         # GET verify
         verify = client.get(target, f"/system/interfaces/{encoded}")
         _audit_log("configure_interface", target, "success", change_request_number=change_request_number, baseline=baseline, verify=verify)
