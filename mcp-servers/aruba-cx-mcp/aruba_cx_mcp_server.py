@@ -467,25 +467,54 @@ def get_routing(target: str, table: str = "routes", vrf: str = "default") -> str
 def get_lldp_neighbors(target: str, interface: str = "") -> str:
     """Get LLDP neighbors from an Aruba CX switch, optionally filtered by interface."""
     try:
-        data = client.get(target, "/system/interfaces?depth=3&attributes=lldp_neighbors")
         neighbors = []
-        for iface_name, iface_data in data.items():
-            if not isinstance(iface_data, dict):
-                continue
-            lldp_data = iface_data.get("lldp_neighbors", {})
-            if isinstance(lldp_data, dict):
-                for neighbor_key, neighbor in lldp_data.items():
-                    if isinstance(neighbor, dict):
-                        neighbors.append({
-                            "local_interface": iface_name,
-                            "remote_chassis_id": neighbor.get("chassis_id", neighbor.get("chassis_name", "")),
-                            "remote_port_id": neighbor.get("port_id", ""),
-                            "remote_system_name": neighbor.get("system_name", neighbor.get("neighbor_info", {}).get("system_name", "")),
-                            "remote_system_description": neighbor.get("system_description", neighbor.get("neighbor_info", {}).get("system_description", "")),
-                        })
-        # Filter by interface if specified
         if interface:
-            neighbors = [n for n in neighbors if n["local_interface"] == interface]
+            # Query single interface directly
+            encoded = interface.replace("/", "%2F")
+            lldp_data = client.get(target, f"/system/interfaces/{encoded}/lldp_neighbors?depth=2")
+            if isinstance(lldp_data, dict):
+                for nk, nv in lldp_data.items():
+                    if isinstance(nv, dict):
+                        ni = nv.get("neighbor_info", {})
+                        neighbors.append({
+                            "local_interface": interface,
+                            "remote_chassis_id": nv.get("chassis_id", ""),
+                            "remote_port_id": nv.get("port_id", ""),
+                            "remote_system_name": ni.get("chassis_name", ""),
+                            "remote_system_description": ni.get("chassis_description", ""),
+                            "remote_mgmt_ip": ni.get("mgmt_ip_list", ""),
+                            "remote_port_description": ni.get("port_description", ""),
+                        })
+        else:
+            # Find interfaces with LLDP neighbors via statistics
+            stats = client.get(target, "/system/interfaces?depth=2&attributes=lldp_statistics")
+            ifaces_with_neighbors = []
+            for iname, idata in stats.items():
+                if not isinstance(idata, dict):
+                    continue
+                ls = idata.get("lldp_statistics", {})
+                if isinstance(ls, dict) and ls.get("lldp_insert", 0) > 0:
+                    ifaces_with_neighbors.append(iname)
+            # Query each interface with neighbors
+            for iname in ifaces_with_neighbors:
+                try:
+                    encoded = iname.replace("/", "%2F")
+                    lldp_data = client.get(target, f"/system/interfaces/{encoded}/lldp_neighbors?depth=2")
+                    if isinstance(lldp_data, dict):
+                        for nk, nv in lldp_data.items():
+                            if isinstance(nv, dict):
+                                ni = nv.get("neighbor_info", {})
+                                neighbors.append({
+                                    "local_interface": iname,
+                                    "remote_chassis_id": nv.get("chassis_id", ""),
+                                    "remote_port_id": nv.get("port_id", ""),
+                                    "remote_system_name": ni.get("chassis_name", ""),
+                                    "remote_system_description": ni.get("chassis_description", ""),
+                                    "remote_mgmt_ip": ni.get("mgmt_ip_list", ""),
+                                    "remote_port_description": ni.get("port_description", ""),
+                                })
+                except Exception:
+                    continue
         _audit_log("get_lldp_neighbors", target, "success")
         return _json_dumps(neighbors)
     except ArubaCxException as exc:
@@ -734,23 +763,50 @@ def _normalize_issu_state(raw_state: str) -> str:
 def get_issu_info(target: str) -> str:
     """Get ISSU readiness, status, and progress from an Aruba CX switch. Returns readiness, blocking conditions, current state, percent complete, and image versions."""
     try:
-        data = client.get(target, "/system/issu/status")
-        raw_state = data.get("state", data.get("status", "idle"))
-        normalized = _normalize_issu_state(str(raw_state))
-        blocking = data.get("blocking_conditions", data.get("blockers", []))
-        if isinstance(blocking, str):
-            blocking = [blocking] if blocking else []
+        data = client.get(target, "/system/issu?depth=2")
+        state = data.get("software_update_state", "unknown")
+        confirmed = data.get("software_update_confirmed", False)
+        prev_version = data.get("previous_software_version", "")
+        rollback_timer = data.get("software_update_rollback_timer", 0)
+        rollback_enabled = data.get("software_update_rollback_timer_enabled", False)
+
+        # Parse upgrade history
+        history = []
+        hist_data = data.get("software_update_history", {})
+        if isinstance(hist_data, dict):
+            for hk, hv in sorted(hist_data.items()):
+                if isinstance(hv, dict):
+                    history.append({
+                        "from_version": hv.get("from_version", ""),
+                        "target_version": hv.get("target_version", ""),
+                        "status": hv.get("status", ""),
+                        "start_time": hv.get("start_time", ""),
+                        "end_time": hv.get("end_time", ""),
+                    })
+
+        # Parse progress steps
+        progress = []
+        prog_data = data.get("software_update_progress", {})
+        if isinstance(prog_data, dict):
+            for pk, pv in sorted(prog_data.items()):
+                if isinstance(pv, dict):
+                    progress.append({
+                        "step": pv.get("operation_name", ""),
+                        "status": pv.get("operation_status", ""),
+                    })
+
+        # Validation status
+        validation = data.get("software_update_validation_status", {})
+
         result = {
-            "ready": normalized == "idle",
-            "state": normalized,
-            "raw_state": str(raw_state),
-            "percent_complete": data.get("percent_complete", data.get("progress", 0)),
-            "current_phase": data.get("current_phase", data.get("phase", "")),
-            "active_image": data.get("active_image", data.get("current_version", "")),
-            "standby_image": data.get("standby_image", data.get("standby_version")),
-            "blocking_conditions": blocking,
-            "error_message": data.get("error_message", data.get("error")),
-            "details": data.get("details", data.get("message", "")),
+            "state": state,
+            "confirmed": confirmed,
+            "previous_version": prev_version,
+            "rollback_timer": rollback_timer,
+            "rollback_timer_enabled": rollback_enabled,
+            "validation": validation if isinstance(validation, dict) else {},
+            "history": history,
+            "progress": progress,
         }
         _audit_log("get_issu_info", target, "success")
         return _json_dumps(result)
@@ -805,31 +861,32 @@ def manage_issu(target: str, action: str, firmware_image: str = "", timeout_seco
 def get_firmware(target: str) -> str:
     """Get firmware versions, boot bank info, and any active upload/download progress from an Aruba CX switch."""
     try:
-        info = {}
-        # Get firmware versions
+        # Get software images and version from system status
+        data = client.get(target, "/system?selector=status&attributes=software_images,software_version,software_info")
+        sw_images = data.get("software_images", {})
+        if not isinstance(sw_images, dict):
+            sw_images = {}
+        result = {
+            "current_version": data.get("software_version", ""),
+            "primary_version": sw_images.get("primary_image_version", ""),
+            "secondary_version": sw_images.get("secondary_image_version", ""),
+            "default_image": sw_images.get("default_image", ""),
+            "primary_image_date": sw_images.get("primary_image_date", ""),
+            "secondary_image_date": sw_images.get("secondary_image_date", ""),
+            "primary_image_size": sw_images.get("primary_image_size", ""),
+            "secondary_image_size": sw_images.get("secondary_image_size", ""),
+        }
+        # Get transfer/download status
         try:
-            data = client.get(target, "/system/firmware")
-            info.update({
-                "current_version": data.get("current_version", data.get("active_version", "")),
-                "primary_version": data.get("primary_version", data.get("primary_image", "")),
-                "secondary_version": data.get("secondary_version", data.get("secondary_image", "")),
-                "active_boot_bank": data.get("active_boot_bank", data.get("boot_bank", "")),
-                "booted_image": data.get("booted_image", data.get("booted_from", "")),
-            })
+            dl_data = client.get(target, "/system/downloads?depth=1")
+            if isinstance(dl_data, dict) and dl_data:
+                result["transfer_status"] = dl_data
+            else:
+                result["transfer_status"] = {"status": "idle"}
         except Exception:
-            pass
-        # Get transfer status
-        try:
-            status_data = client.get(target, "/system/firmware/status")
-            info["transfer_status"] = {
-                "status": status_data.get("status", status_data.get("state", "idle")),
-                "progress": status_data.get("progress", status_data.get("percent_complete", 0)),
-                "message": status_data.get("message", status_data.get("details", "")),
-            }
-        except Exception:
-            info["transfer_status"] = {"status": "idle", "progress": 0, "message": ""}
+            result["transfer_status"] = {"status": "idle"}
         _audit_log("get_firmware", target, "success")
-        return _json_dumps(info)
+        return _json_dumps(result)
     except ArubaCxException as exc:
         _audit_log("get_firmware", target, "error")
         return _json_dumps(exc.error.model_dump())
@@ -877,50 +934,70 @@ def manage_firmware(target: str, action: str, file_path: str = "", url: str = ""
 def get_vsf_topology(target: str) -> str:
     """Get VSF (Virtual Switching Framework) topology from an Aruba CX switch including member details and link states."""
     try:
-        data = client.get(target, "/system/vsf?depth=2")
+        # Try vsf_members first (6300/6400 platforms)
+        vsf_data = None
+        try:
+            vsf_data = client.get(target, "/system/vsf_members?depth=2&selector=status")
+        except Exception:
+            pass
+
+        # Fallback: try /system/vsf (8xxx platforms)
+        if not vsf_data or not isinstance(vsf_data, dict):
+            try:
+                data = client.get(target, "/system/vsf?depth=2")
+                member_data = data.get("members", data.get("vsf_members", data))
+                members = []
+                if isinstance(member_data, dict):
+                    for mk, mv in member_data.items():
+                        if isinstance(mv, dict):
+                            members.append({
+                                "member_id": mv.get("id", int(mk) if str(mk).isdigit() else 0),
+                                "role": mv.get("role", ""),
+                                "status": mv.get("status", mv.get("state", "")),
+                                "serial_number": mv.get("serial_number", ""),
+                            })
+                _audit_log("get_vsf_topology", target, "success")
+                return _json_dumps({"vsf_enabled": True, "members": members})
+            except Exception:
+                _audit_log("get_vsf_topology", target, "success")
+                return _json_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
+
+        # Parse vsf_members response
         members = []
-        member_data = data.get("members", data.get("vsf_members", data))
-        if isinstance(member_data, dict):
-            for member_key, member in member_data.items():
-                if isinstance(member, dict):
-                    members.append({
-                        "member_id": member.get("id", int(member_key) if str(member_key).isdigit() else 0),
-                        "role": member.get("role", ""),
-                        "status": member.get("status", member.get("state", "")),
-                        "model": member.get("model", member.get("platform", "")),
-                        "serial_number": member.get("serial_number", ""),
-                        "links": member.get("links", member.get("vsf_links", [])),
-                    })
-        elif isinstance(member_data, list):
-            for member in member_data:
-                if isinstance(member, dict):
-                    members.append({
-                        "member_id": member.get("id", 0),
-                        "role": member.get("role", ""),
-                        "status": member.get("status", member.get("state", "")),
-                        "model": member.get("model", member.get("platform", "")),
-                        "serial_number": member.get("serial_number", ""),
-                        "links": member.get("links", member.get("vsf_links", [])),
-                    })
+        for mid, minfo in vsf_data.items():
+            if not isinstance(minfo, dict):
+                continue
+            members.append({
+                "member_id": int(mid) if str(mid).isdigit() else mid,
+                "role": minfo.get("role", ""),
+                "status": minfo.get("status", ""),
+            })
+        members.sort(key=lambda m: m["member_id"] if isinstance(m["member_id"], int) else 0)
+
+        # Get topology info from system status
+        topology_type = ""
+        split_state = ""
+        try:
+            sys_status = client.get(target, "/system?selector=status&attributes=vsf_status")
+            vsf_status = sys_status.get("vsf_status", {})
+            if isinstance(vsf_status, dict):
+                topology_type = vsf_status.get("topology_type", "")
+                split_state = vsf_status.get("stack_split_state", "")
+        except Exception:
+            pass
+
         result = {
             "vsf_enabled": True,
+            "topology_type": topology_type,
+            "split_state": split_state,
             "members": members,
         }
         _audit_log("get_vsf_topology", target, "success")
         return _json_dumps(result)
     except ArubaCxException as exc:
-        # Check if the error indicates VSF not supported
-        err = exc.error
-        if err.http_status == 404 or "not supported" in (err.message or "").lower() or "not found" in (err.message or "").lower():
-            _audit_log("get_vsf_topology", target, "success")
-            return _json_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
         _audit_log("get_vsf_topology", target, "error")
-        return _json_dumps(err.model_dump())
+        return _json_dumps(exc.error.model_dump())
     except Exception as exc:
-        error_msg = str(exc).lower()
-        if "404" in error_msg or "not supported" in error_msg or "not found" in error_msg:
-            _audit_log("get_vsf_topology", target, "success")
-            return _json_dumps({"vsf_enabled": False, "message": "VSF is not supported or not enabled on this switch", "members": []})
         _audit_log("get_vsf_topology", target, "error")
         return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
