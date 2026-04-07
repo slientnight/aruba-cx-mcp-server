@@ -643,14 +643,24 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
                 pm = iface_data.get("pm_info", {})
                 if not isinstance(pm, dict) or not pm:
                     continue
-                transceivers.append({
+                entry = {
                     "interface": iface_name,
-                    "transceiver_type": pm.get("connector_type", pm.get("transceiver_type", "")),
+                    "transceiver_type": pm.get("xcvr_desc", pm.get("connector", "")),
+                    "description": pm.get("long_xcvr_desc", ""),
                     "vendor_name": pm.get("vendor_name", ""),
                     "serial_number": pm.get("vendor_serial_number", pm.get("serial_number", "")),
+                    "part_number": pm.get("proprietary_product_number", pm.get("vendor_part_number", "")),
+                    "formfactor": pm.get("formfactor", ""),
+                    "connector": pm.get("external_connector", ""),
+                    "max_speed": pm.get("max_speed", ""),
                     "wavelength": pm.get("wavelength"),
-                    "supports_dom": bool(pm.get("diagnostic_monitoring_type", pm.get("supports_dom", False))),
-                })
+                    "supports_dom": bool(pm.get("dom_supported", pm.get("diagnostic_monitoring_type", False))),
+                }
+                # Add cable-specific fields if present
+                if pm.get("cable_length"):
+                    entry["cable_length"] = pm.get("cable_length")
+                    entry["cable_technology"] = pm.get("cable_technology", "")
+                transceivers.append(entry)
             if interface:
                 transceivers = [t for t in transceivers if t["interface"] == interface]
             _audit_log("get_optics", target, "success")
