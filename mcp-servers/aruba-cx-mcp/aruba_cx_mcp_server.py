@@ -208,10 +208,34 @@ def get_system(target: str) -> str:
 @mcp.tool()
 def get_interfaces(target: str, interface: str = "") -> str:
     """Get interfaces from an Aruba CX switch. Without interface param returns all interfaces summary. With interface param returns detailed info including statistics for that interface."""
+    def _extract_vlan(idata: dict):
+        """Extract VLAN ID from vlan_tag or applied_vlan_tag."""
+        vt = idata.get("vlan_tag")
+        if vt is not None:
+            if isinstance(vt, dict):
+                # {"100": "/rest/..."} — take first key
+                keys = [k for k in vt if str(k).isdigit()]
+                return int(keys[0]) if keys else None
+            if isinstance(vt, (int, float)):
+                return int(vt)
+            if isinstance(vt, str) and vt.isdigit():
+                return int(vt)
+        # Fallback: applied_vlan_tag
+        avt = idata.get("applied_vlan_tag", {})
+        if isinstance(avt, dict):
+            keys = [k for k in avt if str(k).isdigit()]
+            if keys:
+                return int(keys[0])
+        return None
+
     try:
         if interface:
             encoded = interface.replace("/", "%2F")
             data = client.get(target, f"/system/interfaces/{encoded}?depth=2")
+            vlan_id = _extract_vlan(data)
+            # Check for trunk VLANs
+            trunks = data.get("vlan_trunks", {})
+            trunk_vlans = sorted(int(k) for k in trunks if str(k).isdigit()) if isinstance(trunks, dict) and trunks else []
             result = {
                 "name": data.get("name", interface),
                 "admin_state": data.get("admin_state", data.get("admin", "unknown")),
@@ -219,9 +243,12 @@ def get_interfaces(target: str, interface: str = "") -> str:
                 "speed": str(data.get("speed", data.get("link_speed", "unknown"))),
                 "description": data.get("description"),
                 "duplex": data.get("duplex"),
-                "vlan_id": data.get("vlan_tag"),
+                "vlan_id": vlan_id,
+                "vlan_mode": data.get("vlan_mode"),
                 "statistics": data.get("statistics"),
             }
+            if trunk_vlans:
+                result["trunk_vlans"] = trunk_vlans
         else:
             data = client.get(target, "/system/interfaces?depth=2")
             result = []
