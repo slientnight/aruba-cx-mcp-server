@@ -616,39 +616,63 @@ def get_optics(target: str, interface: str = "", detail: str = "info") -> str:
             if not interface:
                 return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message="interface is required for dom detail", target=target).model_dump())
             encoded = interface.replace("/", "%2F")
-            data = client.get(target, f"/system/interfaces/{encoded}?depth=2&attributes=pm_monitor")
+            data = client.get(target, f"/system/interfaces/{encoded}?depth=3&attributes=pm_monitor&selector=status")
             pm = data.get("pm_monitor", data)
             if not isinstance(pm, dict):
                 pm = {}
+
+            # Detect QSFP layout: per-lane data as numeric keys + "common"
+            common = pm.get("common", {})
+            if not isinstance(common, dict):
+                common = {}
             lanes = []
-            lane_data = pm.get("lanes", pm.get("lane_readings", {}))
-            if isinstance(lane_data, dict):
-                for lane_key, lane_val in lane_data.items():
-                    if isinstance(lane_val, dict):
-                        lanes.append({
-                            "lane": int(lane_key) if str(lane_key).isdigit() else 0,
-                            "rx_power_dbm": lane_val.get("rx_power_dbm", lane_val.get("rx_power")),
-                            "tx_power_dbm": lane_val.get("tx_power_dbm", lane_val.get("tx_power")),
-                            "bias_current_ma": lane_val.get("bias_current_ma", lane_val.get("bias_current")),
-                        })
-            elif isinstance(lane_data, list):
-                for idx, lane_val in enumerate(lane_data):
-                    if isinstance(lane_val, dict):
-                        lanes.append({
-                            "lane": lane_val.get("lane", idx),
-                            "rx_power_dbm": lane_val.get("rx_power_dbm", lane_val.get("rx_power")),
-                            "tx_power_dbm": lane_val.get("tx_power_dbm", lane_val.get("tx_power")),
-                            "bias_current_ma": lane_val.get("bias_current_ma", lane_val.get("bias_current")),
-                        })
+            for key, val in pm.items():
+                if not str(key).isdigit() or not isinstance(val, dict):
+                    continue
+                lane = {
+                    "lane": int(key),
+                    "rx_power_mw": val.get("rx_power"),
+                    "tx_power_mw": val.get("tx_power"),
+                    "tx_bias_ma": val.get("tx_bias"),
+                    "rx_los": val.get("rx_los_state"),
+                    "tx_fault": val.get("tx_fault_state"),
+                }
+                # Include alarm/warning flags
+                for param in ("rx_power", "tx_power", "tx_bias"):
+                    for level in ("high_alarm", "high_warning", "low_alarm", "low_warning"):
+                        flag = val.get(f"{param}_{level}")
+                        if flag is True:
+                            lane[f"{param}_{level}"] = True
+                lanes.append(lane)
+            lanes.sort(key=lambda l: l["lane"])
+
+            # If no per-lane data found, try flat SFP layout
+            if not lanes:
+                flat_lane = {}
+                rx = pm.get("rx_power_dbm", pm.get("rx_power"))
+                tx = pm.get("tx_power_dbm", pm.get("tx_power"))
+                bias = pm.get("bias_current_ma", pm.get("tx_bias", pm.get("bias_current")))
+                if rx is not None or tx is not None:
+                    flat_lane = {"lane": 0, "rx_power_mw": rx, "tx_power_mw": tx, "tx_bias_ma": bias}
+                    lanes.append(flat_lane)
+
+            # Common/module-level data
             result = {
                 "interface": interface,
-                "rx_power_dbm": pm.get("rx_power_dbm", pm.get("rx_power")),
-                "tx_power_dbm": pm.get("tx_power_dbm", pm.get("tx_power")),
-                "temperature_celsius": pm.get("temperature_celsius", pm.get("temperature")),
-                "voltage": pm.get("voltage", pm.get("vcc")),
-                "bias_current_ma": pm.get("bias_current_ma", pm.get("bias_current")),
+                "temperature_celsius": common.get("temperature", pm.get("temperature_celsius", pm.get("temperature"))),
+                "voltage": common.get("vcc", pm.get("voltage", pm.get("vcc"))),
                 "lanes": lanes,
             }
+            # Include thresholds if available
+            thresholds = {}
+            for param in ("rx_power", "tx_power", "tx_bias", "temperature", "vcc"):
+                for level in ("high_alarm_threshold", "high_warning_threshold", "low_alarm_threshold", "low_warning_threshold"):
+                    key = f"{param}_{level}"
+                    val = common.get(key)
+                    if val is not None:
+                        thresholds[key] = val
+            if thresholds:
+                result["thresholds"] = thresholds
             _audit_log("get_optics", target, "success")
             return _json_dumps(result)
 
