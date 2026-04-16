@@ -1026,5 +1026,77 @@ def get_vsf_topology(target: str) -> str:
         return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
+@mcp.tool()
+def get_stp(target: str, interface: str = "") -> str:
+    """Get STP status from an Aruba CX switch. Returns global STP config, root bridge info, per-port STP state/role, and any inconsistencies (BPDU guard, loop guard, etc). Optional interface filter."""
+    try:
+        # Global STP status
+        sys_data = client.get(target, "/system?selector=status&attributes=stp_status,stp_intialized")
+        stp_status = sys_data.get("stp_status", {})
+        stp_enabled = sys_data.get("stp_intialized", False)
+
+        # Get STP instances
+        instances_data = client.get(target, "/system/stp_instances?depth=2")
+        instances = []
+        for inst_key, inst in instances_data.items():
+            if not isinstance(inst, dict):
+                continue
+            instances.append({
+                "instance": inst_key,
+                "bridge_id": inst.get("bridge_identifier", ""),
+                "designated_root": inst.get("designated_root", ""),
+                "root_path_cost": inst.get("root_path_cost", 0),
+                "root_port": inst.get("root_port", ""),
+                "priority": inst.get("priority", 0),
+                "topology_change_count": inst.get("topology_change_count", 0),
+                "topology_unstable": inst.get("topology_unstable", False),
+            })
+
+        # Get per-port STP state for each instance
+        ports = []
+        for inst_key in instances_data:
+            try:
+                port_data = client.get(target, f"/system/stp_instances/{inst_key}/stp_instance_ports?depth=2")
+                for pname, pinfo in port_data.items():
+                    if not isinstance(pinfo, dict):
+                        continue
+                    if interface and pname != interface:
+                        continue
+                    inconsistent = pinfo.get("port_inconsistent", {})
+                    has_issue = any(v is True for v in inconsistent.values()) if isinstance(inconsistent, dict) else False
+                    stats = pinfo.get("statistics", {})
+                    entry = {
+                        "interface": pname,
+                        "instance": inst_key,
+                        "port_role": pinfo.get("port_role", ""),
+                        "port_state": pinfo.get("port_state", ""),
+                        "designated_root": pinfo.get("designated_root", ""),
+                        "designated_bridge": pinfo.get("designated_bridge", ""),
+                    }
+                    if has_issue:
+                        entry["inconsistencies"] = {k: v for k, v in inconsistent.items() if v is True}
+                    if stats.get("BPDUs_Rx", 0) > 0 or stats.get("BPDUs_Tx", 0) > 0:
+                        entry["bpdus_rx"] = stats.get("BPDUs_Rx", 0)
+                        entry["bpdus_tx"] = stats.get("BPDUs_Tx", 0)
+                    ports.append(entry)
+            except Exception:
+                continue
+
+        result = {
+            "stp_enabled": stp_enabled,
+            "global_status": stp_status,
+            "instances": instances,
+            "ports": ports,
+        }
+        _audit_log("get_stp", target, "success")
+        return _json_dumps(result)
+    except ArubaCxException as exc:
+        _audit_log("get_stp", target, "error")
+        return _json_dumps(exc.error.model_dump())
+    except Exception as exc:
+        _audit_log("get_stp", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+
+
 if __name__ == "__main__":
     mcp.run(transport="stdio")
