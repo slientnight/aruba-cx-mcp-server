@@ -6,7 +6,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs
 
 ## Features
 
-- **16 tools** (11 read + 5 write) covering the full AOS-CX REST API
+- **17 tools** (12 read + 5 write) covering the full AOS-CX REST API
 - **System** — system info, serial numbers, uptime, firmware, VSF member details with per-member serials and roles, memory utilization
 - **Interfaces** — list, inspect, configure (admin state, speed, duplex, VLAN, description)
 - **VLANs** — list, create, delete
@@ -17,6 +17,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs
 - **Optics/DOM** — transceiver info, per-lane DOM diagnostics, health assessment with threshold violation detection
 - **ISSU** — readiness check, firmware staging, upgrade, rollback timer, confirmation
 - **Firmware** — upload from local file, download from HTTP, boot bank info
+- **STP** — spanning tree status, root bridge, per-port role/state, BPDU guard/loop guard/root guard inconsistency detection
 - **VSF** — topology and member information
 - **Multi-switch** — manage multiple switches from a single server instance
 
@@ -120,21 +121,22 @@ Add to your Claude Desktop config:
 
 ## Available tools
 
-### Read tools (11)
+### Read tools (12)
 
 | Tool | Description |
 |------|-------------|
 | `get_system` | System info + health (hostname, firmware, serial, platform, uptime, MAC, VSF member serials/roles, memory) |
-| `get_interfaces` | All interfaces summary, or one detailed (pass `interface` param) |
+| `get_interfaces` | All interfaces summary, or one detailed (pass `interface` param). `detail`: config/stats/full |
 | `get_vlans` | All VLANs with ID, name, status |
 | `get_config` | Running or startup config (pass `config_type`) |
 | `get_routing` | Routes or ARP table (pass `table="routes"` or `"arp"`) |
 | `get_lldp_neighbors` | LLDP neighbor details |
 | `get_mac_address_table` | MAC table with optional VLAN/MAC filters |
-| `get_optics` | Transceiver info, DOM diagnostics, or health (pass `detail`) |
+| `get_optics` | Transceiver info, DOM diagnostics, or health (pass `detail`). Supports SFP+ and QSFP28 per-lane DOM |
 | `get_issu_info` | ISSU readiness, status, progress |
 | `get_firmware` | Firmware versions, boot bank, transfer progress |
 | `get_vsf_topology` | VSF stack topology and members |
+| `get_stp` | STP status, root bridge, per-port role/state, BPDU guard/loop guard/root guard inconsistencies, BPDU stats |
 
 ### Write tools (5)
 
@@ -160,7 +162,7 @@ python -m pytest tests/ -v
 ## Requirements
 
 - Python >= 3.10
-- Aruba CX switch running AOS-CX with REST API enabled (tested on FL.10.16 / 6300 VSF)
+- Aruba CX switch running AOS-CX with REST API enabled (tested on 6300M VSF, 6100, 8360 — FL/PL/LL.10.16)
 - Network access from the MCP server to the switch management interface
 
 ## License
