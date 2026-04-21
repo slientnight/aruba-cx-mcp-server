@@ -198,10 +198,19 @@ class ArubaCxClient:
             base_url = f"https://{target.host}:{target.port}/rest/{target.api_version}"
             url = f"{base_url}{path if path.startswith('/') else '/' + path}"
 
-            response = session.request(
+            # Use PreparedRequest to prevent requests from normalizing
+            # %2F back to / in URL paths (critical for port names like 1%2F1%2F9)
+            req = requests.Request(
                 method=method,
                 url=url,
                 json=payload if payload is not None else None,
+            )
+            prepared = session.prepare_request(req)
+            # Restore the original URL to prevent %2F normalization
+            prepared.url = url
+
+            response = session.send(
+                prepared,
                 timeout=self._timeout,
             )
 
@@ -209,10 +218,15 @@ class ArubaCxClient:
             if response.status_code == 401:
                 self._logout(target, session)
                 session = self._login(target)
-                response = session.request(
+                req2 = requests.Request(
                     method=method,
                     url=url,
                     json=payload if payload is not None else None,
+                )
+                prepared2 = session.prepare_request(req2)
+                prepared2.url = url
+                response = session.send(
+                    prepared2,
                     timeout=self._timeout,
                 )
                 if response.status_code == 401:

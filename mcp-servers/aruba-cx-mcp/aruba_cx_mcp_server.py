@@ -218,14 +218,23 @@ def get_interfaces(target: str, interface: str = "", detail: str = "config") -> 
                 return int(keys[0]) if keys else None
             if isinstance(vt, (int, float)):
                 return int(vt)
-            if isinstance(vt, str) and vt.isdigit():
-                return int(vt)
+            if isinstance(vt, str):
+                if vt.isdigit():
+                    return int(vt)
+                # Handle URI reference like "/rest/v10.13/system/vlans/989"
+                parts = vt.rstrip("/").split("/")
+                if parts and parts[-1].isdigit():
+                    return int(parts[-1])
         # Fallback: applied_vlan_tag
         avt = idata.get("applied_vlan_tag", {})
         if isinstance(avt, dict):
             keys = [k for k in avt if str(k).isdigit()]
             if keys:
                 return int(keys[0])
+        elif isinstance(avt, str):
+            parts = avt.rstrip("/").split("/")
+            if parts and parts[-1].isdigit():
+                return int(parts[-1])
         return None
 
     try:
@@ -252,18 +261,63 @@ def get_interfaces(target: str, interface: str = "", detail: str = "config") -> 
                 result["statistics"] = data.get("statistics")
         else:
             data = client.get(target, "/system/interfaces?depth=2")
+            # Fetch Port data to get VLAN assignments (CX stores VLANs on Port, not Interface)
+            try:
+                cfg_data = client.get(target, "/fullconfigs/running-config")
+                port_data = cfg_data.get("Port", {})
+            except Exception:
+                port_data = {}
+            # Build a lookup from port name to VLAN info
+            port_vlan_map = {}
+            for pname, pdata in port_data.items():
+                if isinstance(pdata, dict):
+                    port_name = pdata.get("name", pname.replace("%2F", "/"))
+                    pvlan = _extract_vlan(pdata)
+                    pvlan_mode = pdata.get("vlan_mode")
+                    ptrunks = pdata.get("vlan_trunks", {})
+                    ptrunk_vlans = sorted(int(k) for k in ptrunks if str(k).isdigit()) if isinstance(ptrunks, dict) and ptrunks else []
+                    port_vlan_map[port_name] = {
+                        "vlan_id": pvlan,
+                        "vlan_mode": pvlan_mode,
+                        "trunk_vlans": ptrunk_vlans,
+                    }
+                    # Also store with URL-decoded key for matching
+                    decoded_key = pname.replace("%2F", "/")
+                    if decoded_key != port_name:
+                        port_vlan_map[decoded_key] = port_vlan_map[port_name]
             result = []
             for name, iface_data in data.items():
                 if isinstance(iface_data, dict):
-                    result.append({
-                        "name": name,
+                    iface_name = iface_data.get("name", name)
+                    # Try Interface data first, then fall back to Port data
+                    vlan_id = _extract_vlan(iface_data)
+                    vlan_mode = iface_data.get("vlan_mode")
+                    trunks = iface_data.get("vlan_trunks", {})
+                    trunk_vlans = sorted(int(k) for k in trunks if str(k).isdigit()) if isinstance(trunks, dict) and trunks else []
+                    # Merge from Port data if Interface didn't have it
+                    pinfo = port_vlan_map.get(iface_name) or port_vlan_map.get(name.replace("%2F", "/"), {})
+                    if vlan_id is None and pinfo.get("vlan_id") is not None:
+                        vlan_id = pinfo["vlan_id"]
+                    if vlan_mode is None and pinfo.get("vlan_mode") is not None:
+                        vlan_mode = pinfo["vlan_mode"]
+                    if not trunk_vlans and pinfo.get("trunk_vlans"):
+                        trunk_vlans = pinfo["trunk_vlans"]
+                    entry = {
+                        "name": iface_name,
                         "admin_state": iface_data.get("admin_state", iface_data.get("admin", "unknown")),
                         "link_state": iface_data.get("link_state", "unknown"),
                         "speed": str(iface_data.get("speed", iface_data.get("link_speed", "unknown"))),
                         "description": iface_data.get("description"),
                         "duplex": iface_data.get("duplex"),
                         "mtu": iface_data.get("mtu"),
-                    })
+                    }
+                    if vlan_id is not None:
+                        entry["vlan_id"] = vlan_id
+                    if vlan_mode is not None:
+                        entry["vlan_mode"] = vlan_mode
+                    if trunk_vlans:
+                        entry["trunk_vlans"] = trunk_vlans
+                    result.append(entry)
         _audit_log("get_interfaces", target, "success")
         return _json_dumps(result)
     except ArubaCxException as exc:
@@ -309,6 +363,165 @@ def configure_interface(target: str, interface: str, admin_state: str = "", desc
         return _json_dumps(exc.error.model_dump())
     except Exception as exc:
         _audit_log("configure_interface", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+
+
+@mcp.tool()
+def configure_port_access(
+    target: str,
+    port: str,
+    mode: str = "",
+    port_access_config: str = "",
+    change_request_number: str = "",
+) -> str:
+    """Configure port-access AAA on an Aruba CX switch port. Write operation.
+
+    This is a general-purpose tool for any port-level AAA configuration on AOS-CX.
+    It patches the /system/interfaces/{port} REST endpoint.
+
+    Parameters:
+        target: Switch target name.
+        port: Port name (e.g. '1/1/9').
+        mode: Optional preset. Currently supported:
+            - 'mac-radius': Removes static VLAN, sets auth-precedence mac-auth→dot1x,
+              enables mac-auth with reauth, sets client-limit 256.
+        port_access_config: JSON string of arbitrary Port attributes to PATCH.
+            Accepts any field the AOS-CX REST API supports on /system/interfaces/{port}.
+            Common fields:
+            - aaa_auth_precedence: {"1":"mac-auth","2":"dot1x"}
+            - port_access_auth_configurations: {"mac-auth":{"auth_enable":true,"reauth_enable":true},
+              "dot1x":{"auth_enable":true,"reauth_period":3600,"quiet_period":60,"max_retries":3,"tx_period":30}}
+            - port_access_clients_limit: 256
+            - port_access_role: "/rest/v10.13/system/roles/my-role"
+            - vlan_tag: null  (removes static VLAN)
+            - vlan_mode: null
+            - port_access_auth_configurations.dot1x.eap_method: "eap-peap"
+            - port_access_local_override: {"critical_vlan":100,"auth_fail_vlan":999,"guest_vlan":50}
+            When mode is set, port_access_config fields are merged on top of the preset
+            (your overrides win).
+        change_request_number: ITSM change request number (if required).
+    """
+    try:
+        validate_change_request(change_request_number)
+        encoded = port.replace("/", "%2F")
+
+        # AOS-CX REST API manages port-access AAA config on the Interface
+        # resource at /system/interfaces/{name}, not /system/ports/.
+        # GET baseline for audit
+        baseline = client.get(target, f"/system/interfaces/{encoded}")
+
+        # --- Build the patch payload ---
+        patch = {}
+
+        # Apply preset if requested
+        if mode == "mac-radius":
+            # Remove static VLAN
+            if "vlan_tag" in baseline:
+                patch["vlan_tag"] = None
+            if "vlan_mode" in baseline:
+                patch["vlan_mode"] = None
+            # Auth precedence: mac-auth first, dot1x second
+            patch["aaa_auth_precedence"] = {"1": "mac-auth", "2": "dot1x"}
+            # MAC-auth with reauth
+            patch["port_access_auth_configurations"] = {
+                "mac-auth": {"auth_enable": True, "reauth_enable": True},
+            }
+            # Client limit
+            patch["port_access_clients_limit"] = 256
+
+        # Merge user-supplied config on top (overrides preset values)
+        if port_access_config:
+            try:
+                user_config = json.loads(port_access_config)
+            except json.JSONDecodeError as e:
+                return _json_dumps(ArubaCxError(
+                    code=ErrorCode.API_ERROR,
+                    message=f"Invalid JSON in port_access_config: {e}",
+                    target=target,
+                ).model_dump())
+            if not isinstance(user_config, dict):
+                return _json_dumps(ArubaCxError(
+                    code=ErrorCode.API_ERROR,
+                    message="port_access_config must be a JSON object",
+                    target=target,
+                ).model_dump())
+            # Deep-merge: for nested dicts (like port_access_auth_configurations),
+            # merge rather than replace so preset + user fields coexist
+            for key, val in user_config.items():
+                if key in patch and isinstance(patch[key], dict) and isinstance(val, dict):
+                    patch[key].update(val)
+                else:
+                    patch[key] = val
+
+        if not patch:
+            return _json_dumps(ArubaCxError(
+                code=ErrorCode.API_ERROR,
+                message="Nothing to configure. Provide mode and/or port_access_config.",
+                target=target,
+            ).model_dump())
+
+        # --- Apply the changes ---
+        # Port-access auth configurations (mac-auth, dot1x) are sub-resources
+        # that must be configured via their own endpoint, not inline on the
+        # interface PATCH. Split them out.
+        auth_configs = patch.pop("port_access_auth_configurations", None)
+
+        # Step 1: PATCH interface-level attributes (auth precedence, client
+        # limit, vlan removal, etc.)
+        if patch:
+            client.patch(target, f"/system/interfaces/{encoded}", patch)
+
+        # Step 2: Configure auth methods via sub-resource endpoint
+        if auth_configs:
+            for method_name, method_config in auth_configs.items():
+                method_config["authentication_method"] = method_name
+                # Try PUT first (update), fall back to POST (create)
+                try:
+                    client.put(
+                        target,
+                        f"/system/interfaces/{encoded}/port_access_auth_configurations/{method_name}",
+                        method_config,
+                    )
+                except ArubaCxException as put_exc:
+                    if put_exc.error.http_status == 404:
+                        client.post(
+                            target,
+                            f"/system/interfaces/{encoded}/port_access_auth_configurations",
+                            method_config,
+                        )
+                    else:
+                        raise
+
+        # GET final state for verification
+        verify = client.get(target, f"/system/interfaces/{encoded}")
+
+        # Build a focused verify response with AAA-relevant fields
+        aaa_fields = [
+            "aaa_auth_precedence", "port_access_auth_configurations",
+            "port_access_clients_limit", "port_access_role",
+            "port_access_local_override", "vlan_tag", "vlan_mode",
+        ]
+        verify_summary = {k: verify.get(k) for k in aaa_fields if verify.get(k) is not None}
+
+        _audit_log("configure_port_access", target, "success",
+                   change_request_number=change_request_number,
+                   baseline={k: baseline.get(k) for k in aaa_fields if baseline.get(k) is not None},
+                   verify=verify_summary)
+        return _json_dumps({
+            "status": "success",
+            "port": port,
+            "applied": patch,
+            "baseline": {k: baseline.get(k) for k in aaa_fields if baseline.get(k) is not None},
+            "verify": verify_summary,
+        })
+    except ValueError as exc:
+        _audit_log("configure_port_access", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.ITSM_ERROR, message=str(exc), target=target).model_dump())
+    except ArubaCxException as exc:
+        _audit_log("configure_port_access", target, "error")
+        return _json_dumps(exc.error.model_dump())
+    except Exception as exc:
+        _audit_log("configure_port_access", target, "error")
         return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 
@@ -401,7 +614,12 @@ def save_config(target: str, action: str = "write_memory", checkpoint_name: str 
             _audit_log("save_config", target, "success", change_request_number=change_request_number)
             return _json_dumps({"status": "success", "action": "checkpoint", "checkpoint_name": checkpoint_name})
         else:
-            client.put(target, "/fullconfigs/startup-config", {"from": "/fullconfigs/running-config"})
+            # AOS-CX REST API: PUT /fullconfigs/startup-config with source
+            # as query parameter ?from=<full-url>
+            target_obj = client._targets.get(target)
+            api_ver = target_obj.api_version if target_obj else "v10.13"
+            from_param = f"/rest/{api_ver}/fullconfigs/running-config"
+            client.put(target, f"/fullconfigs/startup-config?from={from_param}", None)
             _audit_log("save_config", target, "success", change_request_number=change_request_number)
             return _json_dumps({"status": "success", "action": "write_memory", "message": "Running config saved to startup"})
     except ValueError as exc:
