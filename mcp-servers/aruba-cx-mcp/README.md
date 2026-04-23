@@ -1,6 +1,53 @@
 # Aruba CX MCP Server
 
-A Python MCP server for managing Aruba CX switches via the AOS-CX REST API. Exposes 16 tools (11 read + 5 write) over stdio transport using FastMCP.
+A Python MCP server for managing Aruba CX switches via the AOS-CX REST API. Exposes 19 tools (13 read + 6 write) over stdio transport using FastMCP.
+
+## Tools
+
+### Read Tools (13)
+
+| Tool | Description |
+|------|-------------|
+| `get_system` | System info: hostname, firmware, platform, serial, uptime, CPU, memory, temperature, fans |
+| `get_interfaces` | Interface list or detail. `detail`: `config` (default), `stats`, or `full` |
+| `get_vlans` | List all VLANs with ID, name, and status |
+| `get_config` | Running or startup configuration. `config_type`: `running` (default) or `startup` |
+| `get_routing` | Routing table or ARP table. `table`: `routes` (default) or `arp` |
+| `get_lldp_neighbors` | LLDP neighbor discovery, optionally filtered by interface |
+| `get_mac_address_table` | MAC address table with optional VLAN and MAC filters |
+| `get_optics` | Transceiver info, DOM diagnostics, or health assessment |
+| `get_issu_info` | ISSU readiness, status, progress, and image versions |
+| `get_firmware` | Firmware versions, boot bank info, and upload/download progress |
+| `get_vsf_topology` | VSF stack topology with member details and link states |
+| `get_stp` | STP status: global config, root bridge, per-port state/role, inconsistencies |
+| `get_logs` | Event logs with filters: severity, time range, module, keyword search, limit |
+
+### Write Tools (6)
+
+| Tool | Description |
+|------|-------------|
+| `configure_interface` | Set admin state, description, speed, duplex, VLAN on an interface |
+| `configure_port_access` | Configure port-level AAA: MAC-auth, 802.1X, client limits, auth precedence |
+| `manage_vlan` | Create or delete a VLAN |
+| `save_config` | Save running config to startup (`write_memory`) or create a named checkpoint |
+| `manage_issu` | Initiate ISSU upgrade, set rollback timer, or confirm upgrade |
+| `manage_firmware` | Upload firmware from file or download from URL |
+
+### get_logs Parameters
+
+| Parameter | Type | Default | Description |
+|-----------|------|---------|-------------|
+| `target` | string | required | Named switch target |
+| `severity` | string | `""` | Filter: `emergency`, `alert`, `critical`, `error`, `warning`, `notice`, `info`, `debug` |
+| `since` | string | `""` | Time filter: relative (`1h`, `30m`, `7d`) or ISO 8601 timestamp |
+| `module` | string | `""` | Module filter (case-insensitive): `intfd`, `hpe-mstpd`, `hpe-restd`, `port-accessd`, etc. |
+| `search` | string | `""` | Keyword substring filter on message text (case-insensitive) |
+| `limit` | int | `50` | Max entries to return. Clamped to [1, 1000] |
+
+### Tested Platforms
+
+- Aruba 6300M (FL.10.16.1030) — 6-member VSF stack
+- Aruba 8360 (FL.10.13.x)
 
 ## Installation
 
