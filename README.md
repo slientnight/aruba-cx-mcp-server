@@ -6,7 +6,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs
 
 ## Features
 
-- **18 tools** (12 read + 6 write) covering the full AOS-CX REST API
+- **19 tools** (13 read + 6 write) covering the full AOS-CX REST API
 - **System** — system info, serial numbers, uptime, firmware, VSF member details with per-member serials and roles, memory utilization
 - **Interfaces** — list, inspect, configure (admin state, speed, duplex, VLAN, description)
 - **Port-Access AAA** — generic port-level AAA configuration (MAC-auth, 802.1X, auth precedence, client limits, fallback VLANs, roles) with a `mac-radius` preset for quick conversions
@@ -19,6 +19,7 @@ Built with [FastMCP](https://github.com/jlowin/fastmcp), [Pydantic](https://docs
 - **ISSU** — readiness check, firmware staging, upgrade, rollback timer, confirmation
 - **Firmware** — upload from local file, download from HTTP, boot bank info
 - **STP** — spanning tree status, root bridge, per-port role/state, BPDU guard/loop guard/root guard inconsistency detection
+- **Event Logs** — retrieve and filter switch event logs by severity, time range, module, keyword search
 - **VSF** — topology and member information
 - **Multi-switch** — manage multiple switches from a single server instance
 
@@ -122,7 +123,7 @@ Add to your Claude Desktop config:
 
 ## Available tools
 
-### Read tools (12)
+### Read tools (13)
 
 | Tool | Description |
 |------|-------------|
@@ -138,6 +139,7 @@ Add to your Claude Desktop config:
 | `get_firmware` | Firmware versions, boot bank, transfer progress |
 | `get_vsf_topology` | VSF stack topology and members |
 | `get_stp` | STP status, root bridge, per-port role/state, BPDU guard/loop guard/root guard inconsistencies, BPDU stats |
+| `get_logs` | Event logs with filters: severity, time range (`since`), module, keyword search, limit. Default 50, max 1000 |
 
 ### Write tools (6)
 
@@ -229,7 +231,7 @@ The tool returns baseline (before), applied (what was patched), and verify (afte
 
 ## Testing
 
-76 property-based tests validate 32 correctness properties using Hypothesis:
+88 property-based tests validate correctness properties using Hypothesis:
 
 ```bash
 cd mcp-servers/aruba-cx-mcp
