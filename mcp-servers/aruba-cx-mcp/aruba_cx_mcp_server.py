@@ -6,8 +6,9 @@ Aruba CX switches via the AOS-CX REST API.
 
 import json
 import os
+import re
 import sys
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from typing import Any
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
@@ -16,7 +17,7 @@ from fastmcp import FastMCP
 
 from aruba_client import ArubaCxClient, ArubaCxException
 from itsm_gate import validate_change_request
-from models import ArubaCxError, ErrorCode
+from models import ArubaCxError, ErrorCode, LogEntry
 
 # ---------------------------------------------------------------------------
 # FastMCP server initialization
@@ -29,6 +30,317 @@ print("Aruba CX MCP server starting", file=sys.stderr)
 # Module-level client instance
 # ---------------------------------------------------------------------------
 client = ArubaCxClient()
+
+# ---------------------------------------------------------------------------
+# Severity constants
+# ---------------------------------------------------------------------------
+SEVERITY_RANKS: dict[str, int] = {
+    "emergency": 0,
+    "alert": 1,
+    "critical": 2,
+    "error": 3,
+    "warning": 4,
+    "notice": 5,
+    "info": 6,
+    "debug": 7,
+}
+
+VALID_SEVERITIES: list[str] = list(SEVERITY_RANKS.keys())
+
+# Reverse mapping: priority integer -> severity name
+PRIORITY_TO_SEVERITY: dict[int, str] = {v: k for k, v in SEVERITY_RANKS.items()}
+
+# ---------------------------------------------------------------------------
+# Log format pattern for round-trip parsing
+# ---------------------------------------------------------------------------
+_LOG_FORMAT_RE = re.compile(
+    r"^(?P<timestamp>\S+)\s+\[(?P<severity>[^\]]+)\]\s+\[(?P<module>[^\]]+)\]\s+(?P<message>.+)$"
+)
+
+
+# ---------------------------------------------------------------------------
+# Log parsing / formatting
+# ---------------------------------------------------------------------------
+
+
+def parse_log_entry(raw: dict | str) -> LogEntry:
+    """Convert a raw API log dict or a formatted display string into a LogEntry.
+
+    Handles four input shapes:
+    1. AOS-CX journal dict with keys like ``__REALTIME_TIMESTAMP``,
+       ``PRIORITY``, ``SYSLOG_IDENTIFIER``, ``MESSAGE``.
+    2. Simple dict with keys ``timestamp``, ``severity``, ``module``, ``message``.
+    3. A formatted display string produced by ``format_log_entry`` (for round-trip).
+    4. Any other dict — falls back to raw text with ``"unknown"`` severity/module.
+
+    When required fields are missing or unparseable the function falls back to
+    storing the raw text as the message with severity and module set to
+    ``"unknown"``.
+    """
+    try:
+        # --- handle string input (round-trip from format_log_entry) ---
+        if isinstance(raw, str):
+            match = _LOG_FORMAT_RE.match(raw)
+            if match:
+                return LogEntry(
+                    timestamp=match.group("timestamp"),
+                    severity=match.group("severity").lower(),
+                    module=match.group("module"),
+                    message=match.group("message"),
+                )
+            # Unparseable string — fallback
+            return LogEntry(
+                timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+                severity="unknown",
+                module="unknown",
+                message=raw,
+            )
+
+        # --- AOS-CX journal format (systemd journal entries) ---
+        # Keys: __REALTIME_TIMESTAMP (microseconds), PRIORITY (int 0-7),
+        #        SYSLOG_IDENTIFIER (module), MESSAGE (event text)
+        if isinstance(raw, dict) and "MESSAGE" in raw:
+            # Timestamp: __REALTIME_TIMESTAMP is microseconds since epoch
+            ts_raw = raw.get("__REALTIME_TIMESTAMP")
+            if ts_raw is not None:
+                try:
+                    ts_us = int(ts_raw)
+                    dt = datetime.fromtimestamp(ts_us / 1_000_000, tz=timezone.utc)
+                    timestamp = dt.strftime("%Y-%m-%dT%H:%M:%SZ")
+                except (ValueError, TypeError, OSError):
+                    timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+            else:
+                timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H:%M:%SZ")
+
+            # Severity: PRIORITY is an integer 0-7
+            priority_raw = raw.get("PRIORITY")
+            try:
+                priority_int = int(priority_raw)
+                severity = PRIORITY_TO_SEVERITY.get(priority_int, "unknown")
+            except (ValueError, TypeError):
+                severity = "unknown"
+
+            # Module: SYSLOG_IDENTIFIER
+            module = str(raw.get("SYSLOG_IDENTIFIER", "unknown")).strip() or "unknown"
+
+            # Message: MESSAGE field — strip the "Event|...|" prefix to get
+            # the human-readable part, but keep the full text if no pipe format
+            message_raw = str(raw.get("MESSAGE", "")).strip()
+            if message_raw.startswith("Event|"):
+                # Format: Event|ID|SEVERITY|ROLE|MODULE_ID|actual message
+                parts = message_raw.split("|", 5)
+                if len(parts) >= 6:
+                    message = parts[5].strip()
+                else:
+                    message = message_raw
+            else:
+                message = message_raw or str(raw)
+
+            return LogEntry(
+                timestamp=timestamp,
+                severity=severity,
+                module=module,
+                message=message,
+            )
+
+        # --- simple dict with lowercase keys ---
+        timestamp = raw.get("timestamp")
+        severity = raw.get("severity")
+        module = raw.get("module")
+        message = raw.get("message")
+
+        # If all four fields are present and non-empty strings, use them directly
+        if (
+            isinstance(timestamp, str) and timestamp.strip()
+            and isinstance(severity, str) and severity.strip()
+            and isinstance(module, str) and module.strip()
+            and isinstance(message, str) and message.strip()
+        ):
+            return LogEntry(
+                timestamp=timestamp.strip(),
+                severity=severity.strip().lower(),
+                module=module.strip(),
+                message=message.strip(),
+            )
+
+        # --- attempt to parse a formatted display string from message/text ---
+        raw_text = str(raw.get("message") or raw.get("text") or raw)
+        match = _LOG_FORMAT_RE.match(raw_text)
+        if match:
+            return LogEntry(
+                timestamp=match.group("timestamp"),
+                severity=match.group("severity").lower(),
+                module=match.group("module"),
+                message=match.group("message"),
+            )
+
+        # --- fallback: store raw text with unknown severity/module ---
+        return LogEntry(
+            timestamp=timestamp.strip() if isinstance(timestamp, str) and timestamp.strip() else datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            severity="unknown",
+            module="unknown",
+            message=raw_text,
+        )
+    except Exception:
+        # Ultimate safety net — never raise
+        return LogEntry(
+            timestamp=datetime.now(timezone.utc).isoformat().replace("+00:00", "Z"),
+            severity="unknown",
+            module="unknown",
+            message=str(raw),
+        )
+
+
+def format_log_entry(entry: LogEntry) -> str:
+    """Format a LogEntry into a human-readable display string.
+
+    Format: ``{timestamp} [{severity}] [{module}] {message}``
+
+    This format is designed to be parseable back by ``parse_log_entry`` for
+    round-trip verification.
+    """
+    return f"{entry.timestamp} [{entry.severity}] [{entry.module}] {entry.message}"
+
+
+# ---------------------------------------------------------------------------
+# Parameter parsing and validation
+# ---------------------------------------------------------------------------
+
+_DURATION_RE = re.compile(r"^(\d+)([mhd])$")
+
+
+def parse_since(since: str) -> datetime:
+    """Parse a relative duration or ISO 8601 timestamp into a UTC datetime.
+
+    Relative durations use the format ``<positive-int><unit>`` where unit is
+    one of ``m`` (minutes), ``h`` (hours), or ``d`` (days).
+    Examples: ``"30m"``, ``"1h"``, ``"7d"``.
+
+    ISO 8601 timestamps are parsed via ``datetime.fromisoformat``.
+
+    Raises ``ValueError`` on invalid input with a descriptive message.
+    """
+    since = since.strip()
+    if not since:
+        raise ValueError(
+            "Empty 'since' value. Use a relative duration (e.g. '1h', '30m', '7d') "
+            "or an ISO 8601 timestamp (e.g. '2025-01-15T14:30:00Z')."
+        )
+
+    # Try relative duration first
+    match = _DURATION_RE.match(since)
+    if match:
+        amount = int(match.group(1))
+        unit = match.group(2)
+        if amount <= 0:
+            raise ValueError(
+                f"Duration amount must be a positive integer, got {amount}."
+            )
+        unit_map = {"m": "minutes", "h": "hours", "d": "days"}
+        delta = timedelta(**{unit_map[unit]: amount})
+        return datetime.now(timezone.utc) - delta
+
+    # Try ISO 8601
+    try:
+        dt = datetime.fromisoformat(since)
+        # If no timezone info, assume UTC
+        if dt.tzinfo is None:
+            dt = dt.replace(tzinfo=timezone.utc)
+        return dt
+    except (ValueError, TypeError):
+        pass
+
+    raise ValueError(
+        f"Invalid 'since' value: '{since}'. "
+        "Use a relative duration (e.g. '1h', '30m', '7d') "
+        "or an ISO 8601 timestamp (e.g. '2025-01-15T14:30:00Z')."
+    )
+
+
+def validate_severity(severity: str) -> None:
+    """Validate that *severity* is a recognised syslog severity level.
+
+    Raises ``ValueError`` with a message listing valid options when the
+    supplied value is not in ``SEVERITY_RANKS``.
+    """
+    if severity.lower() not in SEVERITY_RANKS:
+        valid = ", ".join(VALID_SEVERITIES)
+        raise ValueError(
+            f"Invalid severity '{severity}'. "
+            f"Valid severity values are: {valid}"
+        )
+
+
+def clamp_limit(limit: int) -> int:
+    """Return *limit* clamped to the ``[1, 1000]`` range.
+
+    When *limit* is ``0`` (or less than ``1``), defaults to ``50``.
+    Values above ``1000`` are clamped to ``1000``.
+    """
+    if limit <= 0:
+        return 50
+    return min(limit, 1000)
+
+
+# ---------------------------------------------------------------------------
+# Filtering and sorting
+# ---------------------------------------------------------------------------
+
+
+def filter_by_severity(entries: list[LogEntry], severity: str) -> list[LogEntry]:
+    """Return only entries with severity rank <= the requested threshold rank.
+
+    Uses ``SEVERITY_RANKS`` for numeric comparison.  Unknown severities
+    default to rank 7 (debug) so they are included at the most permissive
+    threshold.
+    """
+    threshold = SEVERITY_RANKS.get(severity.lower(), 7)
+    return [
+        e
+        for e in entries
+        if SEVERITY_RANKS.get(e.severity.lower(), 7) <= threshold
+    ]
+
+
+def filter_by_since(entries: list[LogEntry], since: datetime) -> list[LogEntry]:
+    """Return only entries whose timestamp is at or after *since*.
+
+    Parses each entry's ISO 8601 timestamp string to a datetime for
+    comparison.  Entries with unparseable timestamps are excluded.
+    """
+    result: list[LogEntry] = []
+    for e in entries:
+        try:
+            dt = datetime.fromisoformat(e.timestamp)
+            if dt.tzinfo is None:
+                dt = dt.replace(tzinfo=timezone.utc)
+            if dt >= since:
+                result.append(e)
+        except (ValueError, TypeError):
+            # Unparseable timestamp — exclude from time-filtered results
+            pass
+    return result
+
+
+def filter_by_module(entries: list[LogEntry], module: str) -> list[LogEntry]:
+    """Return only entries whose module matches *module* case-insensitively."""
+    module_lower = module.lower()
+    return [e for e in entries if e.module.lower() == module_lower]
+
+
+def filter_by_search(entries: list[LogEntry], search: str) -> list[LogEntry]:
+    """Return only entries whose message contains *search* case-insensitively."""
+    search_lower = search.lower()
+    return [e for e in entries if search_lower in e.message.lower()]
+
+
+def sort_and_limit(entries: list[LogEntry], limit: int) -> list[LogEntry]:
+    """Sort entries in reverse chronological order and truncate to *limit*.
+
+    Sorting is by timestamp string (ISO 8601 sorts lexicographically).
+    """
+    sorted_entries = sorted(entries, key=lambda e: e.timestamp, reverse=True)
+    return sorted_entries[:limit]
 
 
 # ---------------------------------------------------------------------------
@@ -1313,6 +1625,128 @@ def get_stp(target: str, interface: str = "") -> str:
         return _json_dumps(exc.error.model_dump())
     except Exception as exc:
         _audit_log("get_stp", target, "error")
+        return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+
+
+
+# ---------------------------------------------------------------------------
+# Log retrieval tools
+# ---------------------------------------------------------------------------
+
+
+@mcp.tool()
+def get_logs(
+    target: str,
+    severity: str = "",
+    since: str = "",
+    module: str = "",
+    search: str = "",
+    limit: int = 0,
+) -> str:
+    """Get event logs from an Aruba CX switch. Returns structured log entries with timestamp, severity, module, and message. Optional filters: severity (emergency/alert/critical/error/warning/notice/info/debug), since (relative like '1h','30m','7d' or ISO 8601), module (case-insensitive), search (case-insensitive substring on message). Default limit 50, max 1000."""
+    try:
+        # --- Parameter validation (return early on invalid input) ---
+        if severity:
+            try:
+                validate_severity(severity)
+            except ValueError as exc:
+                _audit_log("get_logs", target, "error")
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+
+        since_dt = None
+        if since:
+            try:
+                since_dt = parse_since(since)
+            except ValueError as exc:
+                _audit_log("get_logs", target, "error")
+                return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
+
+        effective_limit = clamp_limit(limit)
+
+        # --- Build query parameters for server-side filtering ---
+        # The AOS-CX REST API exposes event logs at /logs/event with
+        # query params: priority, since, until, limit, MESSAGE,
+        # MESSAGE_ID, SYSLOG_IDENTIFIER, etc.
+        query_parts: list[str] = []
+
+        # MESSAGE_ID filters to event log messages from mgmt modules
+        query_parts.append(
+            "MESSAGE_ID=50c0fa81c2a545ec982a54293f1b1945,"
+            "73d7a43eaf714f97bbdf2b251b21cade"
+        )
+
+        # Server-side severity: API uses priority (0-7 integer)
+        if severity:
+            rank = SEVERITY_RANKS.get(severity.lower(), 7)
+            query_parts.append(f"priority={rank}")
+
+        # Server-side since: API accepts relative like "1 hour ago"
+        # and absolute like "YYYY-MM-DD hh:mm:ss"
+        if since and since_dt is not None:
+            # Format as ISO-ish string the API understands
+            since_str = since_dt.strftime("%Y-%m-%d %H:%M:%S")
+            query_parts.append(f"since={since_str}")
+
+        # Server-side module filter via SYSLOG_IDENTIFIER
+        if module:
+            query_parts.append(f"SYSLOG_IDENTIFIER={module}")
+
+        # Server-side message search
+        if search:
+            query_parts.append(f"MESSAGE={search}")
+
+        # Server-side limit — request more than we need to allow for
+        # client-side filtering to still have enough entries
+        api_limit = min(effective_limit * 3, 1000)
+        query_parts.append(f"limit={api_limit}")
+
+        query_string = "&".join(query_parts)
+        data = client.get(target, f"/logs/event?{query_string}")
+
+        # --- Parse raw log entries ---
+        # The API returns a list of journal dicts. The last element may be
+        # a metadata dict with "total"/"filtered" counts — skip it.
+        raw_entries: list[dict] = []
+        if isinstance(data, list):
+            for item in data:
+                if isinstance(item, dict):
+                    # Skip metadata dicts (contain "total"/"filtered" but no MESSAGE)
+                    if "total" in item and "MESSAGE" not in item:
+                        continue
+                    raw_entries.append(item)
+        elif isinstance(data, dict):
+            # Single dict response — check if it wraps a list
+            for v in data.values():
+                if isinstance(v, list):
+                    for item in v:
+                        if isinstance(item, dict) and "total" not in item:
+                            raw_entries.append(item)
+                elif isinstance(v, dict) and "MESSAGE" in v:
+                    raw_entries.append(v)
+
+        entries = [parse_log_entry(raw) for raw in raw_entries]
+
+        # --- Apply client-side filters as a safety net ---
+        # The API may not filter perfectly, so we re-apply filters
+        if severity:
+            entries = filter_by_severity(entries, severity.lower())
+        if since_dt is not None:
+            entries = filter_by_since(entries, since_dt)
+        if module:
+            entries = filter_by_module(entries, module)
+        if search:
+            entries = filter_by_search(entries, search)
+
+        # --- Sort and limit ---
+        entries = sort_and_limit(entries, effective_limit)
+
+        _audit_log("get_logs", target, "success")
+        return _json_dumps([e.model_dump() for e in entries])
+    except ArubaCxException as exc:
+        _audit_log("get_logs", target, "error")
+        return _json_dumps(exc.error.model_dump())
+    except Exception as exc:
+        _audit_log("get_logs", target, "error")
         return _json_dumps(ArubaCxError(code=ErrorCode.API_ERROR, message=str(exc), target=target).model_dump())
 
 

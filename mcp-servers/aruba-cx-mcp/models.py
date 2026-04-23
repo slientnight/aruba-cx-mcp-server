@@ -234,3 +234,15 @@ class AuditLogEntry(BaseModel):
     change_request_number: Optional[str] = None
     baseline: Optional[dict] = None
     verify: Optional[dict] = None
+
+
+# --- Log Models ---
+
+
+class LogEntry(BaseModel):
+    """A single event log entry from an Aruba CX switch."""
+
+    timestamp: str
+    severity: str
+    module: str
+    message: str
